@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conway's Game of Life</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #39d353;
+    --accent-dim: #2ea043;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 48px;
+  }
+  h1 {
+    font-size: 1.5rem;
+    margin: 0 0 4px;
+  }
+  p.subtitle {
+    color: var(--muted);
+    margin: 0 0 20px;
+    font-size: 0.9rem;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 18px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    align-items: center;
+    justify-content: center;
+    max-width: 640px;
+    width: 100%;
+  }
+  button {
+    background: var(--accent-dim);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 9px 18px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  button:hover { background: var(--accent); }
+  button.secondary {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  button.secondary:hover {
+    background: #21262d;
+    border-color: #8b949e;
+  }
+  .slider-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 200px;
+  }
+  .slider-group label {
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  input[type="range"] {
+    width: 200px;
+    accent-color: var(--accent);
+  }
+  #canvas-wrap {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    line-height: 0;
+    background: #010409;
+  }
+  canvas {
+    display: block;
+    width: min(600px, 90vw);
+    height: min(600px, 90vw);
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+  #status {
+    margin-top: 14px;
+    font-size: 0.9rem;
+    color: var(--muted);
+    min-height: 1.2em;
+    text-align: center;
+    max-width: 600px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Conway&rsquo;s Game of Life</h1>
+<p class="subtitle">100&times;100 grid &mdash; Start seeds a random pattern of classic Life shapes and runs until it settles.</p>
+
+<div class="panel">
+  <button id="start-btn">Start</button>
+  <button id="clear-btn" class="secondary">Clear</button>
+  <div class="slider-group">
+    <label for="speed-slider">Cycle time: <span id="speed-value">0.3</span>s</label>
+    <input type="range" id="speed-slider" min="0.1" max="1" step="0.1" value="0.3">
+  </div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="grid-canvas" width="600" height="600"></canvas>
+</div>
+
+<div id="status">Press Start to seed the grid and begin the simulation.</div>
+
+<script>
+(function () {
+  'use strict';
+
+  const N = 100;
+  const CELL_PIXELS = 600;
+  const MAX_HISTORY = 300;
+  const NOISE_DENSITY = 0.015;
+
+  const canvas = document.getElementById('grid-canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  // Offscreen 1px-per-cell canvas, scaled up when drawn to the visible canvas.
+  const off = document.createElement('canvas');
+  off.width = N;
+  off.height = N;
+  const offCtx = off.getContext('2d');
+  const imageData = offCtx.createImageData(N, N);
+
+  const DEAD_COLOR = [1, 4, 9];
+  const ALIVE_COLOR = [57, 211, 83];
+
+  let grid = new Uint8Array(N * N);
+  let nextGrid = new Uint8Array(N * N);
+  let generation = 0;
+  let running = false;
+  let timerId = null;
+  let historyMap = new Map();
+  let historyQueue = [];
+
+  const startBtn = document.getElementById('start-btn');
+  const clearBtn = document.getElementById('clear-btn');
+  const slider = document.getElementById('speed-slider');
+  const speedValue = document.getElementById('speed-value');
+  const statusEl = document.getElementById('status');
+
+  function idx(x, y) {
+    return y * N + x;
+  }
+
+  function get(arr, x, y) {
+    if (x < 0 || x >= N || y < 0 || y >= N) return 0;
+    return arr[idx(x, y)];
+  }
+
+  function currentDelayMs() {
+    return Math.round(parseFloat(slider.value) * 1000);
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+  }
+
+  // ---- Rendering ----
+
+  function draw() {
+    const data = imageData.data;
+    for (let i = 0; i < N * N; i++) {
+      const alive = grid[i];
+      const c = alive ? ALIVE_COLOR : DEAD_COLOR;
+      const o = i * 4;
+      data[o] = c[0];
+      data[o + 1] = c[1];
+      data[o + 2] = c[2];
+      data[o + 3] = 255;
+    }
+    offCtx.putImageData(imageData, 0, 0);
+    ctx.clearRect(0, 0, CELL_PIXELS, CELL_PIXELS);
+    ctx.drawImage(off, 0, 0, N, N, 0, 0, CELL_PIXELS, CELL_PIXELS);
+  }
+
+  // ---- Simulation step ----
+
+  function computeNext() {
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const n =
+          get(grid, x - 1, y - 1) + get(grid, x, y - 1) + get(grid, x + 1, y - 1) +
+          get(grid, x - 1, y)                            + get(grid, x + 1, y) +
+          get(grid, x - 1, y + 1) + get(grid, x, y + 1) + get(grid, x + 1, y + 1);
+        const alive = grid[idx(x, y)];
+        nextGrid[idx(x, y)] = (alive && (n === 2 || n === 3)) || (!alive && n === 3) ? 1 : 0;
+      }
+    }
+    const tmp = grid;
+    grid = nextGrid;
+    nextGrid = tmp;
+  }
+
+  function packKey(arr) {
+    const bytes = new Uint8Array(Math.ceil(arr.length / 8));
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i]) bytes[i >> 3] |= (1 << (i & 7));
+    }
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 2000) {
+      s += String.fromCharCode.apply(null, bytes.subarray(i, i + 2000));
+    }
+    return s;
+  }
+
+  function recordHistory() {
+    const key = packKey(grid);
+    if (historyMap.has(key)) {
+      return generation - historyMap.get(key);
+    }
+    historyMap.set(key, generation);
+    historyQueue.push(key);
+    if (historyQueue.length > MAX_HISTORY) {
+      const old = historyQueue.shift();
+      historyMap.delete(old);
+    }
+    return null;
+  }
+
+  function tick() {
+    computeNext();
+    generation++;
+    const period = recordHistory();
+    draw();
+    if (period !== null) {
+      stopTimer();
+      running = false;
+      if (period === 1) {
+        setStatus('Stopped: reached a static state at generation ' + generation + '.');
+      } else {
+        setStatus('Stopped: reached a repeating pattern (period ' + period + ') at generation ' + generation + '.');
+      }
+    } else {
+      setStatus('Running… generation ' + generation);
+    }
+  }
+
+  function stopTimer() {
+    if (timerId !== null) {
+      clearInterval(timerId);
+      timerId = null;
+    }
+  }
+
+  // ---- Pattern seeding ----
+
+  const PATTERNS = {
+    blinker: [[0, 0], [1, 0], [2, 0]],
+    toad: [[1, 0], [2, 0], [3, 0], [0, 1], [1, 1], [2, 1]],
+    glider: [[1, 0], [2, 1], [0, 2], [1, 2], [2, 2]],
+    lwss: [[1, 0], [2, 0], [3, 0], [4, 0], [0, 1], [4, 1], [4, 2], [0, 3], [3, 3]],
+    rpentomino: [[1, 0], [2, 0], [0, 1], [1, 1], [1, 2]],
+    diehard: [[6, 0], [0, 1], [1, 1], [1, 2], [5, 2], [6, 2], [7, 2]],
+    acorn: [[1, 0], [3, 1], [0, 2], [1, 2], [4, 2], [5, 2], [6, 2]],
+  };
+
+  const PATTERN_WEIGHTS = [
+    'blinker', 'blinker', 'toad', 'toad',
+    'glider', 'glider', 'glider',
+    'lwss', 'lwss',
+    'rpentomino', 'rpentomino',
+    'diehard', 'acorn',
+  ];
+
+  function randInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  function transform(cells, orientation) {
+    return cells.map(([x, y]) => {
+      let nx, ny;
+      switch (orientation % 4) {
+        case 0: nx = x; ny = y; break;
+        case 1: nx = -y; ny = x; break;
+        case 2: nx = -x; ny = -y; break;
+        default: nx = y; ny = -x; break;
+      }
+      if (orientation >= 4) nx = -nx;
+      return [nx, ny];
+    });
+  }
+
+  function normalize(cells) {
+    let minX = Infinity, minY = Infinity;
+    for (const [x, y] of cells) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+    }
+    return cells.map(([x, y]) => [x - minX, y - minY]);
+  }
+
+  function seedInterestingPattern(arr) {
+    const count = randInt(6, 10);
+    const margin = 3;
+
+    for (let i = 0; i < count; i++) {
+      const name = PATTERN_WEIGHTS[randInt(0, PATTERN_WEIGHTS.length - 1)];
+      const orientation = randInt(0, 7);
+      const cells = normalize(transform(PATTERNS[name], orientation));
+
+      let width = 0, height = 0;
+      for (const [x, y] of cells) {
+        if (x + 1 > width) width = x + 1;
+        if (y + 1 > height) height = y + 1;
+      }
+
+      let placed = false;
+      for (let attempt = 0; attempt < 20 && !placed; attempt++) {
+        const maxOx = N - margin - width;
+        const maxOy = N - margin - height;
+        if (maxOx <= margin || maxOy <= margin) break;
+        const ox = randInt(margin, maxOx);
+        const oy = randInt(margin, maxOy);
+
+        let overlap = false;
+        for (const [dx, dy] of cells) {
+          if (arr[idx(ox + dx, oy + dy)]) { overlap = true; break; }
+        }
+        if (overlap) continue;
+
+        for (const [dx, dy] of cells) {
+          arr[idx(ox + dx, oy + dy)] = 1;
+        }
+        placed = true;
+      }
+    }
+
+    for (let i = 0; i < arr.length; i++) {
+      if (!arr[i] && Math.random() < NOISE_DENSITY) {
+        arr[i] = 1;
+      }
+    }
+  }
+
+  // ---- Controls ----
+
+  function start() {
+    stopTimer();
+    grid.fill(0);
+    seedInterestingPattern(grid);
+    generation = 0;
+    historyMap = new Map();
+    historyQueue = [];
+    recordHistory();
+    draw();
+    setStatus('Running… generation 0');
+    running = true;
+    timerId = setInterval(tick, currentDelayMs());
+  }
+
+  function clearGrid() {
+    stopTimer();
+    grid.fill(0);
+    generation = 0;
+    historyMap = new Map();
+    historyQueue = [];
+    draw();
+    running = false;
+    setStatus('Cleared. Press Start to begin.');
+  }
+
+  slider.addEventListener('input', () => {
+    speedValue.textContent = parseFloat(slider.value).toFixed(1);
+    if (running) {
+      stopTimer();
+      timerId = setInterval(tick, currentDelayMs());
+    }
+  });
+
+  startBtn.addEventListener('click', start);
+  clearBtn.addEventListener('click', clearGrid);
+
+  draw();
+})();
+</script>
+
+</body>
+</html>
