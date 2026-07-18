@@ -115,6 +115,7 @@
 
 <div class="panel">
   <button id="start-btn">Start</button>
+  <button id="rpentomino-btn" class="secondary">R-pentomino</button>
   <button id="clear-btn" class="secondary">Clear</button>
   <div class="slider-group">
     <label for="speed-slider">Cycle time: <span id="speed-value">0.3</span>s</label>
@@ -160,6 +161,7 @@
   let historyQueue = [];
 
   const startBtn = document.getElementById('start-btn');
+  const rpentominoBtn = document.getElementById('rpentomino-btn');
   const clearBtn = document.getElementById('clear-btn');
   const slider = document.getElementById('speed-slider');
   const speedValue = document.getElementById('speed-value');
@@ -375,6 +377,27 @@
     timerId = setInterval(tick, currentDelayMs());
   }
 
+  function seedRPentomino() {
+    stopTimer();
+    grid.fill(0);
+    // Centered so the pattern's ~1103-generation evolution and escaping
+    // gliders have equal room to run in every direction before hitting the edge.
+    const cells = PATTERNS.rpentomino;
+    const ox = Math.floor((N - 3) / 2);
+    const oy = Math.floor((N - 3) / 2);
+    for (const [dx, dy] of cells) {
+      grid[idx(ox + dx, oy + dy)] = 1;
+    }
+    generation = 0;
+    historyMap = new Map();
+    historyQueue = [];
+    recordHistory();
+    draw();
+    setStatus('Running… generation 0');
+    running = true;
+    timerId = setInterval(tick, currentDelayMs());
+  }
+
   function clearGrid() {
     stopTimer();
     grid.fill(0);
@@ -395,6 +418,7 @@
   });
 
   startBtn.addEventListener('click', start);
+  rpentominoBtn.addEventListener('click', seedRPentomino);
   clearBtn.addEventListener('click', clearGrid);
 
   draw();
